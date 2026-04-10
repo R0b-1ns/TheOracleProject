@@ -1,0 +1,282 @@
+
+<h2 class="sr-only">Simulateur de gains Oracle Protocol — calcule la récompense XTZ selon ELO, confiance et mise de chaque Oracle.</h2>
+
+<style>
+.op-card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 1rem 1.25rem; }
+.op-metric { background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 0.75rem 1rem; }
+.op-label { font-size: 12px; color: var(--color-text-secondary); margin: 0 0 4px; }
+.op-value { font-size: 22px; font-weight: 500; color: var(--color-text-primary); margin: 0; }
+.op-sub { font-size: 12px; color: var(--color-text-secondary); margin: 4px 0 0; }
+.conf-btn { padding: 5px 14px; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: transparent; color: var(--color-text-secondary); font-size: 13px; cursor: pointer; transition: background 0.15s; }
+.conf-btn.active { background: #EEEDFE; border-color: #534AB7; color: #3C3489; font-weight: 500; }
+.op-row { display: grid; grid-template-columns: 1fr 1fr 1fr 80px 80px 90px 80px; gap: 8px; align-items: center; padding: 10px 0; border-bottom: 0.5px solid var(--color-border-tertiary); font-size: 13px; }
+.op-row:last-child { border-bottom: none; }
+.op-thead { color: var(--color-text-secondary); font-size: 11px; font-weight: 500; padding-bottom: 8px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: var(--border-radius-md); font-size: 11px; font-weight: 500; }
+.badge-w { background: #E1F5EE; color: #085041; }
+.badge-l { background: #FCEBEB; color: #791F1F; }
+.badge-50 { background: #EEEDFE; color: #3C3489; }
+.badge-75 { background: #FAEEDA; color: #633806; }
+.badge-95 { background: #FAECE7; color: #712B13; }
+.op-formula { font-family: var(--font-mono); font-size: 12px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; color: var(--color-text-secondary); }
+</style>
+
+<div style="padding: 1rem 0 0;">
+
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+    <div class="op-card">
+      <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 12px;">Pool totale de la prédiction</p>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <input type="range" id="pool-slider" min="10" max="500" value="100" step="1" style="flex: 1;">
+        <span style="font-size: 16px; font-weight: 500; min-width: 70px; text-align: right;" id="pool-val">100 XTZ</span>
+      </div>
+      <p class="op-sub" style="margin-top: 8px;">Pool nette (après 2% fee) : <strong id="pool-net">98.0 XTZ</strong></p>
+    </div>
+    <div class="op-card">
+      <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 12px;">Résultat de la prédiction</p>
+      <div style="display: flex; gap: 8px;">
+        <button class="conf-btn active" id="btn-oui" onclick="setOutcome('OUI')">Résultat OUI</button>
+        <button class="conf-btn" id="btn-non" onclick="setOutcome('NON')">Résultat NON</button>
+      </div>
+      <p class="op-sub" style="margin-top: 10px;">Les parieurs du côté gagnant se partagent la pool nette.</p>
+    </div>
+  </div>
+
+  <div class="op-card" style="margin-bottom: 16px;">
+    <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 12px;">Oracles participants — modifie chaque paramètre</p>
+
+    <div style="overflow-x: auto;">
+      <div class="op-row op-thead">
+        <span>Oracle</span><span>Mise (XTZ)</span><span>Confiance</span><span>ELO</span><span>Choix</span><span>Weight</span><span>Gain</span>
+      </div>
+      <div id="oracles-list"></div>
+    </div>
+
+    <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+      <button onclick="addOracle()" style="font-size: 13px; padding: 6px 16px; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: transparent; color: var(--color-text-primary); cursor: pointer;">+ Ajouter un Oracle</button>
+      <button onclick="resetOracles()" style="font-size: 13px; padding: 6px 16px; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: transparent; color: var(--color-text-secondary); cursor: pointer;">Réinitialiser</button>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 16px;">
+    <div class="op-metric">
+      <p class="op-label">Weight total gagnants</p>
+      <p class="op-value" id="total-weight">—</p>
+    </div>
+    <div class="op-metric">
+      <p class="op-label">Gagnants</p>
+      <p class="op-value" id="winner-count">—</p>
+    </div>
+    <div class="op-metric">
+      <p class="op-label">Plus gros gain</p>
+      <p class="op-value" id="max-gain">—</p>
+    </div>
+    <div class="op-metric">
+      <p class="op-label">Bonus pool (2%)</p>
+      <p class="op-value" id="bonus-pool">—</p>
+    </div>
+  </div>
+
+  <div class="op-formula" id="formula-display">
+    weight = net_amount × (confiance / 100) × ELO &nbsp;|&nbsp; reward = (weight / Σweights) × pool_nette
+  </div>
+
+</div>
+
+<div style="position: relative; width: 100%; height: 220px; margin-top: 16px;">
+  <canvas id="gainChart" role="img" aria-label="Graphique comparatif des gains de chaque Oracle"></canvas>
+</div>
+<div id="chart-legend" style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--color-text-secondary);"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const COLORS = ['#534AB7','#1D9E75','#D85A30','#BA7517','#185FA5','#993556'];
+const K_MAP = {50: 15, 75: 30, 95: 60};
+const NAMES = ['Alice','Bob','Charlie','Diana','Eve','Frank'];
+
+let outcome = 'OUI';
+let chart = null;
+
+let oracles = [
+  {name:'Alice', amount:20, conf:50, elo:1000, choice:'OUI'},
+  {name:'Bob',   amount:30, conf:75, elo:1200, choice:'OUI'},
+  {name:'Charlie',amount:15,conf:95, elo:800,  choice:'OUI'},
+  {name:'Diana', amount:25, conf:50, elo:1100, choice:'NON'},
+];
+
+function setOutcome(o) {
+  outcome = o;
+  document.getElementById('btn-oui').classList.toggle('active', o === 'OUI');
+  document.getElementById('btn-non').classList.toggle('active', o === 'NON');
+  render();
+}
+
+function addOracle() {
+  if (oracles.length >= 6) return;
+  oracles.push({name: NAMES[oracles.length] || 'Oracle', amount: 10, conf: 75, elo: 1000, choice: 'OUI'});
+  render();
+}
+
+function resetOracles() {
+  oracles = [
+    {name:'Alice', amount:20, conf:50, elo:1000, choice:'OUI'},
+    {name:'Bob',   amount:30, conf:75, elo:1200, choice:'OUI'},
+    {name:'Charlie',amount:15,conf:95, elo:800,  choice:'OUI'},
+    {name:'Diana', amount:25, conf:50, elo:1100, choice:'NON'},
+  ];
+  render();
+}
+
+function getPool() { return parseFloat(document.getElementById('pool-slider').value); }
+
+function calcWeight(o) {
+  const net = o.amount * 0.98;
+  return net * (o.conf / 100) * o.elo;
+}
+
+function calcNewElo(o, won) {
+  const k = K_MAP[o.conf] || 15;
+  return Math.max(0, o.elo + (won ? k : -k));
+}
+
+function render() {
+  const pool = getPool();
+  const poolNet = pool * 0.98;
+  document.getElementById('pool-val').textContent = pool + ' XTZ';
+  document.getElementById('pool-net').textContent = poolNet.toFixed(1) + ' XTZ';
+  document.getElementById('bonus-pool').textContent = (pool * 0.02).toFixed(2) + ' XTZ';
+
+  const results = oracles.map(o => {
+    const won = o.choice === outcome;
+    const w = won ? calcWeight(o) : 0;
+    const newElo = calcNewElo(o, won);
+    return {...o, won, weight: w, newElo};
+  });
+
+  const totalWeight = results.reduce((s,r) => s + r.weight, 0);
+  const winners = results.filter(r => r.won);
+
+  results.forEach(r => {
+    r.reward = totalWeight > 0 && r.won ? (r.weight / totalWeight) * poolNet : 0;
+  });
+
+  document.getElementById('total-weight').textContent = Math.round(totalWeight).toLocaleString();
+  document.getElementById('winner-count').textContent = winners.length + ' / ' + oracles.length;
+  const maxGain = Math.max(...results.map(r => r.reward));
+  document.getElementById('max-gain').textContent = maxGain > 0 ? maxGain.toFixed(2) + ' XTZ' : '—';
+
+  const list = document.getElementById('oracles-list');
+  list.innerHTML = '';
+  results.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'op-row';
+
+    const confClass = r.conf === 50 ? 'badge-50' : r.conf === 75 ? 'badge-75' : 'badge-95';
+    const statusBadge = r.won
+      ? `<span class="badge badge-w">Gagné</span>`
+      : `<span class="badge badge-l">Perdu</span>`;
+    const eloChange = r.won ? `+${K_MAP[r.conf]}` : `-${K_MAP[r.conf]}`;
+    const eloColor = r.won ? '#0F6E56' : '#A32D2D';
+
+    row.innerHTML = `
+      <span style="font-weight:500;color:var(--color-text-primary)">${r.name}</span>
+      <span>
+        <input type="number" min="1" max="999" value="${r.amount}" step="1"
+          style="width:70px;font-size:13px;padding:3px 6px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:transparent;color:var(--color-text-primary);"
+          onchange="oracles[${i}].amount=Math.max(1,parseInt(this.value)||1);render()">
+        <span style="font-size:11px;color:var(--color-text-secondary)"> XTZ</span>
+      </span>
+      <span>
+        <select style="font-size:12px;padding:3px 6px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:transparent;color:var(--color-text-primary);"
+          onchange="oracles[${i}].conf=parseInt(this.value);render()">
+          <option value="50" ${r.conf===50?'selected':''}>50% (±15)</option>
+          <option value="75" ${r.conf===75?'selected':''}>75% (±30)</option>
+          <option value="95" ${r.conf===95?'selected':''}>95% (±60)</option>
+        </select>
+      </span>
+      <span>
+        <input type="number" min="0" max="9999" value="${r.elo}" step="10"
+          style="width:68px;font-size:13px;padding:3px 6px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:transparent;color:var(--color-text-primary);"
+          onchange="oracles[${i}].elo=Math.max(0,parseInt(this.value)||0);render()">
+      </span>
+      <span>
+        <select style="font-size:12px;padding:3px 6px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:transparent;color:var(--color-text-primary);"
+          onchange="oracles[${i}].choice=this.value;render()">
+          <option value="OUI" ${r.choice==='OUI'?'selected':''}>OUI</option>
+          <option value="NON" ${r.choice==='NON'?'selected':''}>NON</option>
+        </select>
+      </span>
+      <span style="font-family:var(--font-mono);font-size:12px;color:var(--color-text-secondary)">${r.won ? Math.round(r.weight).toLocaleString() : '—'}</span>
+      <span>
+        ${r.won
+          ? `<span style="font-weight:500;color:#0F6E56">${r.reward.toFixed(2)}</span><span style="font-size:11px;color:var(--color-text-secondary)"> XTZ</span>`
+          : `<span style="color:var(--color-text-secondary);font-size:12px">0 XTZ</span>`
+        }
+        <br><span style="font-size:10px;color:${eloColor}">${eloChange} ELO → ${r.newElo}</span>
+      </span>`;
+    list.appendChild(row);
+  });
+
+  updateChart(results, poolNet);
+}
+
+function updateChart(results, poolNet) {
+  const labels = results.map(r => r.name);
+  const rewards = results.map(r => parseFloat(r.reward.toFixed(2)));
+  const bets = results.map(r => r.amount);
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('gainChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Gain (XTZ)',
+          data: rewards,
+          backgroundColor: results.map((r,i) => r.won ? COLORS[i % COLORS.length] + 'cc' : '#88878033'),
+          borderColor: results.map((r,i) => r.won ? COLORS[i % COLORS.length] : '#88878066'),
+          borderWidth: 1,
+          borderRadius: 4,
+        },
+        {
+          label: 'Mise initiale (XTZ)',
+          data: bets,
+          backgroundColor: 'transparent',
+          borderColor: results.map((r,i) => COLORS[i % COLORS.length] + '66'),
+          borderWidth: 1.5,
+          borderDash: [4,3],
+          type: 'bar',
+          borderRadius: 4,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: {
+          label: ctx => ctx.datasetIndex === 0
+            ? `Gain : ${ctx.parsed.y.toFixed(2)} XTZ`
+            : `Mise : ${ctx.parsed.y} XTZ`
+        }
+      }},
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 12 } } },
+        y: { grid: { color: 'rgba(128,128,128,0.1)' }, ticks: { font: { size: 11 }, callback: v => v + ' XTZ' } }
+      }
+    }
+  });
+
+  const legend = document.getElementById('chart-legend');
+  legend.innerHTML = results.map((r,i) =>
+    `<span style="display:flex;align-items:center;gap:4px;">
+      <span style="width:10px;height:10px;border-radius:2px;background:${r.won ? COLORS[i%COLORS.length]+'cc' : '#88878033'};border:1px solid ${COLORS[i%COLORS.length]}66;"></span>
+      ${r.name} ${r.won ? '(gagné)' : '(perdu)'}
+    </span>`
+  ).join('');
+}
+
+document.getElementById('pool-slider').addEventListener('input', render);
+render();
+</script>
