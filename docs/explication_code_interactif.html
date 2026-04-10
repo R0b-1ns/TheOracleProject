@@ -1,0 +1,311 @@
+
+<h2 class="sr-only">Documentation technique du smart contract OracleProtocol — structure, entrypoints, mécanique ELO et tests de sécurité.</h2>
+<style>
+.doc-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; }
+.doc-tab { padding: 6px 14px; border: 0.5px solid var(--color-border-secondary); border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; background: transparent; color: var(--color-text-secondary); transition: all 0.15s; }
+.doc-tab.active { background: #EEEDFE; border-color: #534AB7; color: #3C3489; }
+.section { display: none; }
+.section.active { display: block; }
+.card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 1rem 1.25rem; margin-bottom: 12px; }
+.ep-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+.badge-ep { background: #EEEDFE; color: #3C3489; }
+.badge-admin { background: #FAECE7; color: #712B13; }
+.badge-user { background: #E1F5EE; color: #085041; }
+.badge-assert { background: #FCEBEB; color: #791F1F; }
+.badge-ok { background: #EAF3DE; color: #27500A; }
+.field-grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 16px; font-size: 13px; }
+.field-name { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-secondary); padding: 3px 0; }
+.field-type { font-size: 12px; color: var(--color-text-primary); padding: 3px 0; }
+.flow-step { display: flex; gap: 12px; margin-bottom: 8px; align-items: flex-start; }
+.step-num { min-width: 22px; height: 22px; border-radius: 50%; background: #EEEDFE; color: #3C3489; font-size: 11px; font-weight: 500; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+.step-body { flex: 1; font-size: 13px; color: var(--color-text-primary); line-height: 1.5; }
+.step-note { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+.formula-box { font-family: var(--font-mono); font-size: 12px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 10px 14px; margin: 8px 0; color: var(--color-text-primary); line-height: 1.7; }
+.sec-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.sec-cell { background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 10px; font-size: 12px; }
+.sec-label { color: var(--color-text-secondary); margin-bottom: 4px; font-size: 11px; }
+.divider { border: none; border-top: 0.5px solid var(--color-border-tertiary); margin: 12px 0; }
+h3 { font-size: 14px; font-weight: 500; margin: 0 0 10px; color: var(--color-text-primary); }
+p { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 10px; line-height: 1.6; }
+</style>
+
+<div style="padding: 1rem 0 0;">
+<nav class="doc-nav">
+  <button class="doc-tab active" onclick="show('vue')">Vue d'ensemble</button>
+  <button class="doc-tab" onclick="show('storage')">Storage</button>
+  <button class="doc-tab" onclick="show('ep1')">create_prediction</button>
+  <button class="doc-tab" onclick="show('ep2')">place_bet</button>
+  <button class="doc-tab" onclick="show('ep3')">resolve_prediction</button>
+  <button class="doc-tab" onclick="show('ep4')">claim_reward</button>
+  <button class="doc-tab" onclick="show('secu')">Sécurité</button>
+  <button class="doc-tab" onclick="show('tests')">Tests</button>
+</nav>
+
+<div id="s-vue" class="section active">
+  <div class="card">
+    <h3>Qu'est-ce que ce contrat fait ?</h3>
+    <p>OracleProtocol est un marché de prédiction sur Tezos. Des utilisateurs (les "Oracles") parient des XTZ sur l'issue d'une question. Le gagnant reçoit une part de la cagnotte proportionnelle à son poids — lui-même calculé à partir de sa mise, de son niveau de confiance et de son score de réputation ELO.</p>
+    <hr class="divider">
+    <h3>Les 4 actions possibles</h3>
+    <div class="flow-step"><div class="step-num">1</div><div class="step-body"><strong>create_prediction</strong> — L'admin crée une question avec une deadline<div class="step-note">Ex : "Le prix du XTZ dépassera $2 avant le 1er juin ?"</div></div></div>
+    <div class="flow-step"><div class="step-num">2</div><div class="step-body"><strong>place_bet</strong> — Un Oracle mise des XTZ avec un niveau de confiance (50%, 75% ou 95%)<div class="step-note">2% sont prélevés automatiquement pour la bonus pool</div></div></div>
+    <div class="flow-step"><div class="step-num">3</div><div class="step-body"><strong>resolve_prediction</strong> — L'admin désigne le résultat gagnant et déclenche les calculs ELO<div class="step-note">Chaque pari gagnant reçoit un weight = net_amount × confiance × ELO</div></div></div>
+    <div class="flow-step"><div class="step-num">4</div><div class="step-body"><strong>claim_reward</strong> — Le gagnant réclame sa part de la pool<div class="step-note">reward = (son weight / total des weights gagnants) × pool nette</div></div></div>
+  </div>
+  <div class="card">
+    <h3>Stack technique</h3>
+    <div class="field-grid">
+      <span class="field-name">Langage</span><span class="field-type">SmartPy (Python-like, compilé en Michelson)</span>
+      <span class="field-name">Réseau</span><span class="field-type">Ghostnet (testnet Tezos)</span>
+      <span class="field-name">Monnaie</span><span class="field-type">XTZ (mutez = 1/1 000 000 XTZ)</span>
+      <span class="field-name">Frontend</span><span class="field-type">React + TypeScript + Taquito + Beacon SDK</span>
+    </div>
+  </div>
+</div>
+
+<div id="s-storage" class="section">
+  <div class="card">
+    <h3>Variables globales du contrat</h3>
+    <div class="field-grid">
+      <span class="field-name">admin</span><span class="field-type">address — seul compte autorisé à résoudre les prédictions</span>
+      <span class="field-name">oracle_address</span><span class="field-type">address — alias de admin (résolveur)</span>
+      <span class="field-name">prediction_count</span><span class="field-type">nat — compteur auto-incrémenté, sert d'ID</span>
+      <span class="field-name">bonus_pool</span><span class="field-type">mutez — cagnotte alimentée par les 2% de frais</span>
+      <span class="field-name">elo_scores</span><span class="field-type">map[address → int] — score de réputation par wallet</span>
+      <span class="field-name">predictions</span><span class="field-type">map[nat → Prediction] — toutes les prédictions</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Structure d'une Prediction</h3>
+    <div class="field-grid">
+      <span class="field-name">creator</span><span class="field-type">address</span>
+      <span class="field-name">description</span><span class="field-type">string</span>
+      <span class="field-name">deadline</span><span class="field-type">timestamp — plus de paris après cette date</span>
+      <span class="field-name">options</span><span class="field-type">list[string] — ex: ["Oui", "Non"]</span>
+      <span class="field-name">status</span><span class="field-type">nat — 0=OPEN, 1=CLOSED, 2=RESOLVED</span>
+      <span class="field-name">winning_option</span><span class="field-type">option[nat] — None jusqu'à la résolution</span>
+      <span class="field-name">total_pool</span><span class="field-type">mutez — somme des mises nettes</span>
+      <span class="field-name">total_winning_weight</span><span class="field-type">nat — Σ weights des gagnants</span>
+      <span class="field-name">bets</span><span class="field-type">map[nat → Bet] — paris indexés</span>
+      <span class="field-name">bet_count</span><span class="field-type">nat — nombre de paris</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Structure d'un Bet</h3>
+    <div class="field-grid">
+      <span class="field-name">bettor</span><span class="field-type">address — wallet du parieur</span>
+      <span class="field-name">choice</span><span class="field-type">nat — index dans la liste options</span>
+      <span class="field-name">amount</span><span class="field-type">mutez — mise nette (après 2% fee)</span>
+      <span class="field-name">confidence</span><span class="field-type">nat — valeur parmi {50, 75, 95}</span>
+      <span class="field-name">weight</span><span class="field-type">nat — calculé à la résolution (0 si perdant)</span>
+      <span class="field-name">claimed</span><span class="field-type">bool — False → True après claim_reward</span>
+    </div>
+  </div>
+</div>
+
+<div id="s-ep1" class="section">
+  <div class="card">
+    <div class="ep-header">
+      <span class="badge badge-ep">entrypoint</span>
+      <span style="font-family:var(--font-mono);font-size:14px;font-weight:500;color:var(--color-text-primary)">create_prediction</span>
+      <span class="badge badge-admin">admin seulement</span>
+    </div>
+    <p>Crée une nouvelle prédiction ouverte aux paris. Aucune restriction sur le sender dans le code actuel — c'est une note de conception : l'admin est le seul à appeler cette fonction par convention.</p>
+    <hr class="divider">
+    <h3>Paramètres</h3>
+    <div class="field-grid">
+      <span class="field-name">description</span><span class="field-type">string — texte de la question</span>
+      <span class="field-name">deadline</span><span class="field-type">timestamp — date limite des paris</span>
+      <span class="field-name">options</span><span class="field-type">list[string] — liste des choix possibles</span>
+    </div>
+    <hr class="divider">
+    <h3>Ce que fait le contrat</h3>
+    <div class="flow-step"><div class="step-num">1</div><div class="step-body">Crée un record Prediction avec status=OPEN, pools à 0, bets vide</div></div>
+    <div class="flow-step"><div class="step-num">2</div><div class="step-body">L'insère dans <code style="font-size:11px">predictions[prediction_count]</code></div></div>
+    <div class="flow-step"><div class="step-num">3</div><div class="step-body">Incrémente <code style="font-size:11px">prediction_count</code><div class="step-note">L'ID de la prédiction = valeur avant incrémentation</div></div></div>
+  </div>
+</div>
+
+<div id="s-ep2" class="section">
+  <div class="card">
+    <div class="ep-header">
+      <span class="badge badge-ep">entrypoint</span>
+      <span style="font-family:var(--font-mono);font-size:14px;font-weight:500;color:var(--color-text-primary)">place_bet</span>
+      <span class="badge badge-user">tout utilisateur</span>
+    </div>
+    <p>Permet à un Oracle de placer un pari sur une prédiction ouverte en envoyant des XTZ avec la transaction.</p>
+    <hr class="divider">
+    <h3>Paramètres</h3>
+    <div class="field-grid">
+      <span class="field-name">prediction_id</span><span class="field-type">nat — ID de la prédiction visée</span>
+      <span class="field-name">choice</span><span class="field-type">nat — index de l'option choisie</span>
+      <span class="field-name">confidence</span><span class="field-type">nat — obligatoirement 50, 75 ou 95</span>
+    </div>
+    <hr class="divider">
+    <h3>Validations (assert)</h3>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">confidence ∈ {50, 75, 95}</code> → sinon INVALID_CONFIDENCE</div></div>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">prediction_id &lt; prediction_count</code> → sinon INVALID_ID</div></div>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">now &lt; deadline</code> → sinon DEADLINE_PASSED</div></div>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">status == OPEN</code> → sinon NOT_OPEN</div></div>
+    <hr class="divider">
+    <h3>Calcul des frais</h3>
+    <div class="formula-box">fee = amount × 2 / 100  (sp.split_tokens)
+net_bet = amount - fee
+bonus_pool += fee
+total_pool += net_bet</div>
+    <p style="font-size:12px">Exemple : 10 XTZ misés → fee = 0.2 XTZ → net = 9.8 XTZ enregistrés dans le pari</p>
+  </div>
+</div>
+
+<div id="s-ep3" class="section">
+  <div class="card">
+    <div class="ep-header">
+      <span class="badge badge-ep">entrypoint</span>
+      <span style="font-family:var(--font-mono);font-size:14px;font-weight:500;color:var(--color-text-primary)">resolve_prediction</span>
+      <span class="badge badge-admin">oracle_address seulement</span>
+    </div>
+    <p>Désigne le résultat gagnant, calcule le weight de chaque pari gagnant, et met à jour le score ELO de tous les parieurs.</p>
+    <hr class="divider">
+    <h3>Ordre des opérations — important</h3>
+    <div class="flow-step"><div class="step-num">1</div><div class="step-body">Vérifie <code style="font-size:11px">sender == oracle_address</code>, sinon NOT_AUTHORIZED</div></div>
+    <div class="flow-step"><div class="step-num">2</div><div class="step-body">Vérifie <code style="font-size:11px">status == OPEN</code>, sinon ALREADY_RESOLVED</div></div>
+    <div class="flow-step"><div class="step-num">3</div><div class="step-body">Passe <code style="font-size:11px">status → RESOLVED</code> et enregistre <code style="font-size:11px">winning_option</code></div></div>
+    <div class="flow-step"><div class="step-num">4</div><div class="step-body">Boucle sur tous les paris — pour chacun :<div class="step-note">a) Initialise ELO à 1000 si premier pari du wallet<br>b) Si gagnant → calcule weight avec l'ELO AVANT mise à jour<br>c) Met à jour ELO ± delta selon confiance</div></div></div>
+    <hr class="divider">
+    <h3>Formule du weight</h3>
+    <div class="formula-box">current_elo = elo_scores[bettor]  ← valeur AVANT update
+amt_nat = bet.amount en mutez / 1
+weight = amt_nat × confidence × current_elo
+total_winning_weight += weight</div>
+    <div style="background:#FAEEDA;border-radius:var(--border-radius-md);padding:8px 12px;font-size:12px;color:#633806;margin:8px 0;">
+      Note design : le weight utilise l'ELO avant la mise à jour. Un gagnant avec 95% de confiance voit son ELO augmenter de 60 points APRES le calcul de son weight.
+    </div>
+    <hr class="divider">
+    <h3>Mise à jour ELO (paliers fixes)</h3>
+    <div class="formula-box">Confiance 50% → delta = ±15 points
+Confiance 75% → delta = ±30 points
+Confiance 95% → delta = ±60 points
+
+Victoire  : new_elo = current_elo + delta
+Défaite   : new_elo = current_elo - delta
+Initial   : 1000 (si première apparition)</div>
+  </div>
+</div>
+
+<div id="s-ep4" class="section">
+  <div class="card">
+    <div class="ep-header">
+      <span class="badge badge-ep">entrypoint</span>
+      <span style="font-family:var(--font-mono);font-size:14px;font-weight:500;color:var(--color-text-primary)">claim_reward</span>
+      <span class="badge badge-user">gagnant seulement</span>
+    </div>
+    <p>Permet au gagnant d'un pari de récupérer sa récompense. Envoie les XTZ directement sur son wallet.</p>
+    <hr class="divider">
+    <h3>Paramètres</h3>
+    <div class="field-grid">
+      <span class="field-name">prediction_id</span><span class="field-type">nat — ID de la prédiction</span>
+      <span class="field-name">bet_id</span><span class="field-type">nat — index du pari dans predictions[id].bets</span>
+    </div>
+    <hr class="divider">
+    <h3>Validations (dans l'ordre)</h3>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">status == RESOLVED</code> → NOT_RESOLVED</div></div>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">bet.bettor == sp.sender</code> → NOT_YOUR_BET<div class="step-note">Empêche de voler le gain d'un autre</div></div></div>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">not bet.claimed</code> → ALREADY_CLAIMED<div class="step-note">Protection anti double-spend critique</div></div></div>
+    <div class="flow-step"><div class="step-num" style="background:#FCEBEB;color:#791F1F">!</div><div class="step-body"><code style="font-size:11px">bet.choice == winning_option</code> → LOST_BET</div></div>
+    <hr class="divider">
+    <h3>Calcul et envoi</h3>
+    <div class="formula-box">reward = split_tokens(total_pool, bet.weight, total_winning_weight)
+       = total_pool × (bet.weight / Σ winning_weights)
+
+bet.claimed = True  ← mis à jour AVANT sp.send()</div>
+  </div>
+</div>
+
+<div id="s-secu" class="section">
+  <div class="card">
+    <h3>Vecteurs d'attaque couverts</h3>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Fausse confiance (ex: 80%)</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">assert is_valid</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>INVALID_CONFIDENCE</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Pari sur ID inexistant</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">id &lt; count</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>INVALID_ID</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Pari hors deadline</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">now &lt; deadline</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>DEADLINE_PASSED</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Résolution par non-admin</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">sender == oracle_address</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>NOT_AUTHORIZED</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Double résolution</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">status == OPEN</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>ALREADY_RESOLVED</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Claim du gain d'un autre</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">bettor == sender</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>NOT_YOUR_BET</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Double-claim (drain contrat)</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">not bet.claimed</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>ALREADY_CLAIMED</div>
+    </div>
+    <div class="sec-row">
+      <div class="sec-cell"><div class="sec-label">Attaque</div>Claim d'un pari perdant</div>
+      <div class="sec-cell"><div class="sec-label">Guard</div><code style="font-size:11px">choice == winning_option</code></div>
+      <div class="sec-cell"><div class="sec-label">Erreur</div>LOST_BET</div>
+    </div>
+  </div>
+</div>
+
+<div id="s-tests" class="section">
+  <div class="card">
+    <h3>Acteurs du scénario de test</h3>
+    <div class="field-grid">
+      <span class="field-name">admin</span><span class="field-type">Déploie le contrat, crée les prédictions, résout</span>
+      <span class="field-name">alice (50%)</span><span class="field-type">Joueuse prudente — pari 10 XTZ confiance 50</span>
+      <span class="field-name">bob (75%)</span><span class="field-type">Joueur initié — pari 20 XTZ confiance 75</span>
+      <span class="field-name">charlie (95%)</span><span class="field-type">Joueur visionnaire — pari 30 XTZ confiance 95, mauvais côté</span>
+      <span class="field-name">eve (hacker)</span><span class="field-type">Attaquante — toutes ses tentatives doivent échouer</span>
+    </div>
+    <hr class="divider">
+    <h3>Vérifications mathématiques clés</h3>
+    <div class="formula-box">Pool totale    : 10+20+30 = 60 XTZ
+Frais (2%)    : 1.2 XTZ  → bonus_pool = 1_200_000 mutez
+Pool nette    : 58.8 XTZ → total_pool  = 58_800_000 mutez
+
+ELO post-résolution (choix 0 gagne) :
+  Alice   gagnante 50% → 1000 + 15 = 1015
+  Bob     gagnant  75% → 1000 + 30 = 1030
+  Charlie perdant  95% → 1000 - 60 =  940</div>
+    <hr class="divider">
+    <h3>Flux du test complet</h3>
+    <div class="flow-step"><div class="step-num">1</div><div class="step-body">Vérification de l'état initial (count=0, pool=0, admin correct)</div></div>
+    <div class="flow-step"><div class="step-num">2</div><div class="step-body">Création de 3 prédictions (normale / normale / expirée)</div></div>
+    <div class="flow-step"><div class="step-num">3</div><div class="step-body">Paris d'Alice, Bob, Charlie — vérification comptable de la pool</div></div>
+    <div class="flow-step"><div class="step-num">4</div><div class="step-body">Attaques d'Eve sur place_bet — toutes _valid=False attendues</div></div>
+    <div class="flow-step"><div class="step-num">5</div><div class="step-body">Résolution par admin — vérification des 3 scores ELO</div></div>
+    <div class="flow-step"><div class="step-num">6</div><div class="step-body">Attaques d'Eve sur claim_reward — vérification du claimed=True et double-claim bloqué</div></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+function show(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.doc-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('s-' + id).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
